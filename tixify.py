@@ -830,33 +830,112 @@ class TixifyApp:
         for widget in self.main_frame.winfo_children():
             widget.destroy()
         
+        # --- Scroll setup ---
+        canvas = tk.Canvas(self.main_frame)
+        scrollbar = ttk.Scrollbar(self.main_frame, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        
+        # Configure grid weights
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(0, weight=1)
+        # ---------------------
+        
         # My bookings list
-        ttk.Label(self.main_frame, text="My Bookings", font=("Arial", 16)).grid(row=0, column=0, columnspan=2, pady=10)
+        ttk.Label(scrollable_frame, text="My Bookings", font=("Arial", 16)).pack(pady=10)
         
         try:
             with self.conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT b.*, e.Title, e.Price
+                    SELECT b.*, e.Title, e.Price, e.EventID,
+                           (SELECT COUNT(*) FROM Review r WHERE r.EventID = e.EventID AND r.UserID = b.UserID) as HasReviewed
                     FROM Booking b
                     JOIN Event e ON b.EventID = e.EventID
                     WHERE b.UserID = %s
                 """, (self.current_user['UserID'],))
                 bookings = cursor.fetchall()
                 
-                for i, booking in enumerate(bookings, 1):
-                    booking_frame = ttk.Frame(self.main_frame)
-                    booking_frame.grid(row=i, column=0, columnspan=2, pady=5, padx=5, sticky="w")
+                for booking in bookings:
+                    booking_frame = ttk.Frame(scrollable_frame)
+                    booking_frame.pack(pady=5, padx=5, fill="x")
                     
                     ttk.Label(booking_frame, text=f"Event: {booking['Title']}").grid(row=0, column=0, sticky="w")
                     ttk.Label(booking_frame, text=f"Seats: {booking['NumberOfSeats']}").grid(row=1, column=0, sticky="w")
                     ttk.Label(booking_frame, text=f"Total Price: ₹{booking['TotalPrice']}").grid(row=2, column=0, sticky="w")
                     ttk.Label(booking_frame, text=f"Status: {booking['PaymentStatus']}").grid(row=3, column=0, sticky="w")
+                    
+                    # Add review button if not already reviewed
+                    if booking['HasReviewed'] == 0:
+                        ttk.Button(booking_frame, text="Add Review", 
+                                 command=lambda b=booking: self.show_review_form(b)).grid(row=0, column=1, rowspan=4, padx=5)
         
         except Exception as e:
             messagebox.showerror("Error", str(e))
         
-        ttk.Button(self.main_frame, text="Back to Dashboard", command=self.show_user_dashboard).grid(row=len(bookings)+1, column=0, columnspan=2, pady=10)
-    
+        ttk.Button(scrollable_frame, text="Back to Dashboard", command=self.show_user_dashboard).pack(pady=10)
+
+    def show_review_form(self, booking):
+        review_window = tk.Toplevel(self.root)
+        review_window.title("Write Review")
+        review_window.geometry("400x300")
+
+        # Create main frame with padding
+        main_frame = ttk.Frame(review_window, padding="20")
+        main_frame.pack(fill="both", expand=True)
+
+        # Title
+        ttk.Label(main_frame, text=f"Review for {booking['Title']}", font=("Arial", 14)).pack(pady=10)
+
+        # Rating
+        ttk.Label(main_frame, text="Rating (1-5):").pack(pady=5)
+        rating_var = tk.StringVar(value="5")
+        rating_frame = ttk.Frame(main_frame)
+        rating_frame.pack(pady=5)
+        for i in range(1, 6):
+            ttk.Radiobutton(rating_frame, text=str(i), variable=rating_var, value=str(i)).pack(side="left", padx=5)
+
+        # Comment
+        ttk.Label(main_frame, text="Comment:").pack(pady=5)
+        comment_text = tk.Text(main_frame, height=5, width=40)
+        comment_text.pack(pady=5)
+
+        def submit_review():
+            try:
+                rating = int(rating_var.get())
+                comment = comment_text.get("1.0", "end-1c").strip()
+
+                if not comment:
+                    raise ValueError("Please enter a comment")
+
+                with self.conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO Review (UserID, EventID, Rating, Comment, ReviewDate)
+                        VALUES (%s, %s, %s, %s, NOW())
+                    """, (self.current_user['UserID'], booking['EventID'], rating, comment))
+                    self.conn.commit()
+
+                messagebox.showinfo("Success", "Review submitted successfully!")
+                review_window.destroy()
+                self.show_my_bookings()  # Refresh the bookings list
+            except ValueError as e:
+                messagebox.showerror("Error", str(e))
+            except Exception as e:
+                messagebox.showerror("Error", "Failed to submit review. Please try again.")
+
+        # Buttons
+        ttk.Button(main_frame, text="Submit Review", command=submit_review).pack(pady=20)
+        ttk.Button(main_frame, text="Cancel", command=review_window.destroy).pack(pady=5)
+
     def manage_events(self):
         # Clear main frame
         for widget in self.main_frame.winfo_children():
@@ -1771,6 +1850,75 @@ class TixifyApp:
         # Logout button
         ttk.Button(self.main_frame, text="Logout", 
                   command=self.logout).pack(pady=20)
+    
+    def show_review_form(self, booking):
+        review_window = tk.Toplevel(self.root)
+        review_window.title("Write Review")
+        review_window.geometry("400x300")
+
+        # --- Scroll setup ---
+        canvas = tk.Canvas(review_window)
+        scrollbar = ttk.Scrollbar(review_window, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        # ---------------------
+
+        # Create main frame with padding
+        main_frame = ttk.Frame(scrollable_frame, padding="20")
+        main_frame.pack(fill="both", expand=True)
+
+        # Title
+        ttk.Label(main_frame, text=f"Review for {booking['Title']}", font=("Arial", 14)).pack(pady=10)
+
+        # Rating
+        ttk.Label(main_frame, text="Rating (1-5):").pack(pady=5)
+        rating_var = tk.StringVar(value="5")
+        rating_frame = ttk.Frame(main_frame)
+        rating_frame.pack(pady=5)
+        for i in range(1, 6):
+            ttk.Radiobutton(rating_frame, text=str(i), variable=rating_var, value=str(i)).pack(side="left", padx=5)
+
+        # Comment
+        ttk.Label(main_frame, text="Comment:").pack(pady=5)
+        comment_text = tk.Text(main_frame, height=5, width=40)
+        comment_text.pack(pady=5)
+
+        def submit_review():
+            try:
+                rating = int(rating_var.get())
+                comment = comment_text.get("1.0", "end-1c").strip()
+
+                if not comment:
+                    raise ValueError("Please enter a comment")
+
+                with self.conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO Review (UserID, EventID, Rating, Comment, ReviewDate)
+                        VALUES (%s, %s, %s, %s, NOW())
+                    """, (self.current_user['UserID'], booking['EventID'], rating, comment))
+                    self.conn.commit()
+
+                messagebox.showinfo("Success", "Review submitted successfully!")
+                review_window.destroy()
+                self.show_my_bookings()  # Refresh the bookings list
+            except ValueError as e:
+                messagebox.showerror("Error", str(e))
+            except Exception as e:
+                messagebox.showerror("Error", "Failed to submit review. Please try again.")
+
+        # Buttons
+        ttk.Button(main_frame, text="Submit Review", command=submit_review).pack(pady=20)
+        ttk.Button(main_frame, text="Cancel", command=review_window.destroy).pack(pady=5)
 
 if __name__ == "__main__":
     root = tk.Tk()
